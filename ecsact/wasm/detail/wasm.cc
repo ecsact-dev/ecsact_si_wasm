@@ -78,7 +78,7 @@ thread_local auto thread_minst = std::optional<std::reference_wrapper<minst_ecsa
 auto ensure_minst() -> minst_ecsact_system_impls& {
 	if(!thread_minst) {
 		auto index = ++next_available_minst_index % all_minsts.size();
-		return all_minsts[index];
+		thread_minst = all_minsts[index];
 	}
 	
 	return thread_minst->get();
