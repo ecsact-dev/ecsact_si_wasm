@@ -86,13 +86,6 @@ public:
 		import_resolver_t    import_resolver
 	) -> std::variant<minst, minst_error>;
 
-	/**
-	 * Create a new minst with internal memory copied over. If 'initialize' was
-	 * already called then the memory should be identical, thus 'initialize'
-	 * should not be called again.
-	 */
-	static auto copy(minst& other) -> minst;
-
 	minst(minst&& other);
 	~minst();
 

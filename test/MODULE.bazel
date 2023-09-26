@@ -15,6 +15,12 @@ bazel_dep(name = "entt", version = "3.12.2")
 bazel_dep(name = "ecsact_si_wasm")
 bazel_dep(name = "rules_ecsact", version = "0.4.2")
 
+git_override(
+    module_name = "ecsact_rt_entt",
+    commit = "8232a52ace513cdc8e0b3cecdf967460ea0b0c7d",
+    remote = "https://github.com/ecsact-dev/ecsact_rt_entt",
+)
+
 local_path_override(
     module_name = "ecsact_si_wasm",
     path = "..",
