@@ -71,23 +71,24 @@ struct minst_ecsact_system_impls {
 
 auto trap_handler = ecsactsi_wasm_trap_handler{};
 
-auto all_minsts = std::vector<minst_ecsact_system_impls>{};
-auto next_available_minst_index = std::atomic_size_t{};
-thread_local auto thread_minst = std::optional<std::reference_wrapper<minst_ecsact_system_impls>>{};
+auto              all_minsts = std::vector<minst_ecsact_system_impls>{};
+auto              next_available_minst_index = std::atomic_size_t{};
+thread_local auto thread_minst =
+	std::optional<std::reference_wrapper<minst_ecsact_system_impls>>{};
 
 auto ensure_minst() -> minst_ecsact_system_impls& {
 	if(!thread_minst) {
 		auto index = ++next_available_minst_index % all_minsts.size();
 		thread_minst = all_minsts[index];
 	}
-	
+
 	return thread_minst->get();
 }
 
 void ecsact_si_wasm_system_impl(ecsact_system_execution_context* ctx) {
 	auto& minst = ensure_minst();
-	auto system_id = ecsact_system_execution_context_id(ctx);
-	auto itr = minst.sys_impl_exports.find(system_id);
+	auto  system_id = ecsact_system_execution_context_id(ctx);
+	auto  itr = minst.sys_impl_exports.find(system_id);
 	assert(itr != minst.sys_impl_exports.end());
 
 	auto mem_data = std::array<std::byte, 4096>{};
