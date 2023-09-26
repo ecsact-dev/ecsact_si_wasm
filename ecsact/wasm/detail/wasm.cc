@@ -19,6 +19,7 @@
 #include <iostream>
 #include <array>
 #include <cstddef>
+#include <thread>
 #include "ecsact/runtime/dynamic.h"
 #include "ecsact/wasm/detail/minst/minst.hh"
 #include "ecsact/wasm/detail/logger.hh"
@@ -70,19 +71,31 @@ struct minst_ecsact_system_impls {
 
 auto trap_handler = ecsactsi_wasm_trap_handler{};
 
-thread_local auto thread_minst = std::optional<minst_ecsact_system_impls>{};
+auto all_minsts = std::vector<minst_ecsact_system_impls>{};
+auto next_available_minst_index = std::atomic_size_t{};
+thread_local auto thread_minst = std::optional<std::reference_wrapper<minst_ecsact_system_impls>>{};
+
+auto ensure_minst() -> minst_ecsact_system_impls& {
+	if(!thread_minst) {
+		auto index = ++next_available_minst_index % all_minsts.size();
+		return all_minsts[index];
+	}
+	
+	return thread_minst->get();
+}
 
 void ecsact_si_wasm_system_impl(ecsact_system_execution_context* ctx) {
+	auto& minst = ensure_minst();
 	auto system_id = ecsact_system_execution_context_id(ctx);
-	auto itr = thread_minst->sys_impl_exports.find(system_id);
-	assert(itr != thread_minst->sys_impl_exports.end());
+	auto itr = minst.sys_impl_exports.find(system_id);
+	assert(itr != minst.sys_impl_exports.end());
 
 	auto mem_data = std::array<std::byte, 4096>{};
 	set_call_mem_data(mem_data.data(), mem_data.size());
 	defer {
 		set_call_mem_data(nullptr, 0);
 	};
-	call_mem_alloc(thread_minst->memory.memory);
+	call_mem_alloc(minst.memory.memory);
 	itr->second.func_call(call_mem_alloc(ctx));
 }
 } // namespace
@@ -217,7 +230,7 @@ ecsactsi_wasm_error ecsactsi_wasm_load(
 		ecsact_set_system_execution_impl(sys_id, &ecsact_si_wasm_system_impl);
 	}
 
-	thread_minst.emplace( //
+	all_minsts.emplace_back( //
 		std::move(inst),
 		system_impl_exports,
 		*wasm_mem
