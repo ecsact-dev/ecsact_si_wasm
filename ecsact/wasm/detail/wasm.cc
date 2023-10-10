@@ -19,6 +19,7 @@
 #include <iostream>
 #include <array>
 #include <cstddef>
+#include <thread>
 #include "ecsact/runtime/dynamic.h"
 #include "ecsact/wasm/detail/minst/minst.hh"
 #include "ecsact/wasm/detail/logger.hh"
@@ -70,20 +71,66 @@ struct minst_ecsact_system_impls {
 
 auto trap_handler = ecsactsi_wasm_trap_handler{};
 
-thread_local auto thread_minst = std::optional<minst_ecsact_system_impls>{};
+auto              all_minsts = std::vector<minst_ecsact_system_impls>{};
+auto              next_available_minst_index = std::atomic_size_t{};
+thread_local auto thread_minst =
+	std::optional<std::reference_wrapper<minst_ecsact_system_impls>>{};
+
+auto ensure_minst() -> minst_ecsact_system_impls& {
+	if(!thread_minst) {
+		auto index = ++next_available_minst_index % all_minsts.size();
+		thread_minst = all_minsts[index];
+	}
+
+	return thread_minst->get();
+}
 
 void ecsact_si_wasm_system_impl(ecsact_system_execution_context* ctx) {
-	auto system_id = ecsact_system_execution_context_id(ctx);
-	auto itr = thread_minst->sys_impl_exports.find(system_id);
-	assert(itr != thread_minst->sys_impl_exports.end());
+	auto& minst = ensure_minst();
+	auto  system_id = ecsact_system_execution_context_id(ctx);
+	auto  itr = minst.sys_impl_exports.find(system_id);
+	assert(itr != minst.sys_impl_exports.end());
 
 	auto mem_data = std::array<std::byte, 4096>{};
 	set_call_mem_data(mem_data.data(), mem_data.size());
 	defer {
 		set_call_mem_data(nullptr, 0);
 	};
-	call_mem_alloc(thread_minst->memory.memory);
+	call_mem_alloc(minst.memory.memory);
 	itr->second.func_call(call_mem_alloc(ctx));
+}
+
+auto get_system_impl_exports(
+	minst&                                                   inst,
+	int                                                      systems_count,
+	ecsact_system_like_id*                                   system_ids,
+	const char**                                             wasm_exports,
+	std::unordered_map<ecsact_system_like_id, minst_export>& system_impl_exports
+) -> ecsactsi_wasm_error {
+	system_impl_exports.clear();
+	system_impl_exports.reserve(systems_count);
+
+	for(auto i = 0; systems_count > i; ++i) {
+		auto sys_id = system_ids[i];
+		auto system_impl_export_name = std::string_view{
+			wasm_exports[i],
+			std::strlen(wasm_exports[i]),
+		};
+
+		auto exp = inst.find_export(system_impl_export_name);
+
+		if(!exp) {
+			return ECSACTSI_WASM_ERR_EXPORT_NOT_FOUND;
+		}
+
+		if(exp->kind() != WASM_EXTERN_FUNC) {
+			return ECSACTSI_WASM_ERR_EXPORT_INVALID;
+		}
+
+		system_impl_exports[sys_id] = *exp;
+	}
+
+	return ECSACTSI_WASM_OK;
 }
 } // namespace
 
@@ -121,107 +168,106 @@ ecsactsi_wasm_error ecsactsi_wasm_load(
 	using ecsact::wasm::detail::minst_error_code;
 	using ecsact::wasm::detail::minst_export;
 
-	auto result = ecsact::wasm::detail::minst::create(
-		engine(),
-		std::span{
-			reinterpret_cast<std::byte*>(wasm_data),
-			static_cast<size_t>(wasm_data_size),
-		},
-		[&](const minst_import imp) -> minst_import_resolve_t {
-			auto module_name = imp.module();
-			auto method_name = imp.name();
+	auto import_resolver = [&](const minst_import imp) -> minst_import_resolve_t {
+		auto module_name = imp.module();
+		auto method_name = imp.name();
 
-			if(imp.module() == "env") {
-				auto itr = guest_env_module_imports.find(method_name);
-				if(itr == guest_env_module_imports.end()) {
-					return std::nullopt;
-				}
-				return itr->second();
+		if(imp.module() == "env") {
+			auto itr = guest_env_module_imports.find(method_name);
+			if(itr == guest_env_module_imports.end()) {
+				return std::nullopt;
 			}
+			return itr->second();
+		}
 
-			if(imp.module() == "wasi_snapshot_preview1") {
-				auto itr = guest_wasi_module_imports.find(method_name);
-				if(itr == guest_wasi_module_imports.end()) {
-					return std::nullopt;
-				}
-				return itr->second();
+		if(imp.module() == "wasi_snapshot_preview1") {
+			auto itr = guest_wasi_module_imports.find(method_name);
+			if(itr == guest_wasi_module_imports.end()) {
+				return std::nullopt;
 			}
-
-			return std::nullopt;
+			return itr->second();
 		}
-	);
 
-	if(std::holds_alternative<minst_error>(result)) {
-		auto err = std::get<minst_error>(result);
-		switch(err.code) {
-			case minst_error_code::ok:
-				assert(err.code != minst_error_code::ok);
-			case minst_error_code::compile_fail:
-				return ECSACTSI_WASM_ERR_COMPILE_FAIL;
-			case minst_error_code::unresolved_guest_import:
-				return ECSACTSI_WASM_ERR_GUEST_IMPORT_INVALID;
-			case minst_error_code::instantiate_fail:
-				return ECSACTSI_WASM_ERR_INSTANTIATE_FAIL;
+		return std::nullopt;
+	};
+
+	all_minsts.reserve(100);
+
+	for(auto i = 0; 100 > i; ++i) {
+		auto result = minst::create(
+			engine(),
+			std::span{
+				reinterpret_cast<std::byte*>(wasm_data),
+				static_cast<size_t>(wasm_data_size),
+			},
+			import_resolver
+		);
+
+		if(std::holds_alternative<minst_error>(result)) {
+			auto err = std::get<minst_error>(result);
+			switch(err.code) {
+				case minst_error_code::ok:
+					assert(err.code != minst_error_code::ok);
+				case minst_error_code::compile_fail:
+					return ECSACTSI_WASM_ERR_COMPILE_FAIL;
+				case minst_error_code::unresolved_guest_import:
+					return ECSACTSI_WASM_ERR_GUEST_IMPORT_INVALID;
+				case minst_error_code::instantiate_fail:
+					return ECSACTSI_WASM_ERR_INSTANTIATE_FAIL;
+			}
 		}
+
+		auto& inst = std::get<minst>(result);
+		auto  system_impl_exports =
+			std::unordered_map<ecsact_system_like_id, minst_export>{};
+
+		auto err = get_system_impl_exports(
+			inst,
+			systems_count,
+			system_ids,
+			wasm_exports,
+			system_impl_exports
+		);
+
+		if(err != ECSACTSI_WASM_OK) {
+			return err;
+		}
+
+		auto wasm_mem = std::optional<minst_export>{};
+
+		for(auto exp : inst.exports()) {
+			if(exp.kind() == WASM_EXTERN_MEMORY) {
+				wasm_mem = exp;
+				break;
+			}
+		}
+
+		assert(wasm_mem);
+
+		auto mem_data = std::array<std::byte, 4096>{};
+		set_call_mem_data(mem_data.data(), mem_data.size());
+		call_mem_alloc<wasm_memory_t*>(wasm_mem->memory);
+		defer {
+			set_call_mem_data(nullptr, 0);
+		};
+		auto init_trap = inst.initialize();
+		if(init_trap) {
+			return ECSACTSI_WASM_ERR_INITIALIZE_FAIL;
+		}
+
+		all_minsts.emplace_back( //
+			std::move(inst),
+			system_impl_exports,
+			*wasm_mem
+		);
 	}
-
-	auto& inst = std::get<minst>(result);
-	auto  system_impl_exports =
-		std::unordered_map<ecsact_system_like_id, minst_export>{};
-
-	system_impl_exports.reserve(systems_count);
 
 	for(auto i = 0; systems_count > i; ++i) {
-		auto sys_id = system_ids[i];
-		auto system_impl_export_name = std::string_view{
-			wasm_exports[i],
-			std::strlen(wasm_exports[i]),
-		};
-
-		auto exp = inst.find_export(system_impl_export_name);
-
-		if(!exp) {
-			return ECSACTSI_WASM_ERR_EXPORT_NOT_FOUND;
-		}
-
-		if(exp->kind() != WASM_EXTERN_FUNC) {
-			return ECSACTSI_WASM_ERR_EXPORT_INVALID;
-		}
-
-		system_impl_exports[sys_id] = *exp;
+		ecsact_set_system_execution_impl(
+			system_ids[i],
+			&ecsact_si_wasm_system_impl
+		);
 	}
-
-	auto wasm_mem = std::optional<minst_export>{};
-
-	for(auto exp : inst.exports()) {
-		if(exp.kind() == WASM_EXTERN_MEMORY) {
-			wasm_mem = exp;
-			break;
-		}
-	}
-
-	assert(wasm_mem);
-
-	auto mem_data = std::array<std::byte, 4096>{};
-	set_call_mem_data(mem_data.data(), mem_data.size());
-	call_mem_alloc<wasm_memory_t*>(wasm_mem->memory);
-	defer {
-		set_call_mem_data(nullptr, 0);
-	};
-	auto init_trap = inst.initialize();
-	if(init_trap) {
-		return ECSACTSI_WASM_ERR_INITIALIZE_FAIL;
-	}
-
-	for(auto&& [sys_id, exp] : system_impl_exports) {
-		ecsact_set_system_execution_impl(sys_id, &ecsact_si_wasm_system_impl);
-	}
-
-	thread_minst.emplace( //
-		std::move(inst),
-		system_impl_exports,
-		*wasm_mem
-	);
 
 	return ECSACTSI_WASM_OK;
 }
