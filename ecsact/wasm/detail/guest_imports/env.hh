@@ -150,6 +150,20 @@ const auto guest_env_module_imports = allowed_guest_imports_t{
 			};
 		},
 	},
+	{
+		"ecsact_system_execution_context_stream_toggle",
+		[]() -> minst_import_resolve_func {
+			return {
+				wasm_functype_new_4_0(
+					wasm_valtype_new(WASM_I32), // context
+					wasm_valtype_new(WASM_I32), // component_id
+					wasm_valtype_new(WASM_I32), // streaming_enabled
+					wasm_valtype_new(WASM_I32) // indexed_fields
+				),
+				&wasm_ecsact_system_execution_context_stream_toggle,
+			};
+		},
+	},
 };
 
 } // namespace ecsact::wasm::detail

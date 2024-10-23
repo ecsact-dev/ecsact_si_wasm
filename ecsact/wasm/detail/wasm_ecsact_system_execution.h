@@ -65,4 +65,9 @@ wasm_trap_t* wasm_ecsact_system_execution_context_entity(
 	wasm_val_vec_t*       results
 );
 
+wasm_trap_t* wasm_ecsact_system_execution_context_stream_toggle(
+	const wasm_val_vec_t* args,
+	wasm_val_vec_t*       results
+);
+
 #endif // WASM_ECSACT_SYSTEM_EXECUTION__H

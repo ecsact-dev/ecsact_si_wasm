@@ -290,3 +290,21 @@ wasm_trap_t* wasm_ecsact_system_execution_context_entity(
 
 	return nullptr;
 }
+
+wasm_trap_t* wasm_ecsact_system_execution_context_stream_toggle(
+	const wasm_val_vec_t* args,
+	wasm_val_vec_t*       results
+) {
+	debug_trace_method("ecsact_system_execution_context_stream_toggle");
+
+	auto ctx = get_execution_context(args->data[0]);
+	auto memory = get_execution_context_memory(args->data[0]);
+
+	ecsact_system_execution_context_add(
+		ctx,
+		ecsact_id_from_wasm_i32<ecsact_component_like_id>(args->data[1]),
+		get_const_void_ptr(args->data[2], memory)
+	);
+
+	return nullptr;
+}
